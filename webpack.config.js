@@ -68,7 +68,7 @@ module.exports = (env = {}) => {
           ]
         },
         {
-          test: /\.(png|jpg|jpeg|gif|ico)$/,
+          test: /\.(png|jpg|jpeg|gif|ico|svg)$/,
           use: [
             {
               // loader: 'url-loader'
@@ -80,7 +80,7 @@ module.exports = (env = {}) => {
           ]
         },
         {
-          test: /\.(woff(2)?|ttf|eot|svg)(\?v=\d+\.\d+\.\d+)?$/,
+          test: /\.(woff(2)?|ttf|eot)(\?v=\d+\.\d+\.\d+)?$/,
           loader: 'file-loader',
           options: {
             name: './fonts/[name].[hash].[ext]'
@@ -100,13 +100,13 @@ module.exports = (env = {}) => {
           template: './vnc.html'
         }
       ),
-      /*
       new CopyWebpackPlugin([
-          {from: './public/img', to: 'img'}
+          {from: './app/images/', to: 'app/images'},
+          {from: './app/sounds/', to: 'app/sounds'},
+          {from: './app/locale/', to: 'app/locale'},
         ],
         {copyUnmodified: false}
       )
-      */
     ]
   }
 };
