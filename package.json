@@ -21,7 +21,7 @@
   "scripts": {
     "lint": "eslint app core po/po2js po/xgettext-html tests utils",
     "test": "karma start karma.conf.js",
-    "prepublish": "node ./utils/use_require.js --as commonjs --clean",
+    "prepublish": "",
     "dev": "node node_modules/webpack-cli/bin/cli.js -d --progress --watch --profile --json > compilation-stats.json --env.dev",
     "start": "node node_modules/webpack-dev-server/bin/webpack-dev-server.js -d --progress --color --inline --env.dev",
     "build": "rm -rf build; node_modules/webpack-cli/bin/cli.js -p --progress --env.prod"
