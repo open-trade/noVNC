@@ -13,6 +13,7 @@
  */
 
 import * as Log from './util/logging.js';
+import * as proto from '../message.js';
 
 // this has performance issues in some versions Chromium, and
 // doesn't gain a tremendous amount of performance increase in Firefox
