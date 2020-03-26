@@ -63,17 +63,6 @@ const UI = {
         // Translate the DOM
         l10n.translateDOM();
 
-        WebUtil.fetchJSON('./package.json')
-            .then((packageInfo) => {
-                Array.from(document.getElementsByClassName('noVNC_version')).forEach(el => el.innerText = packageInfo.version);
-            })
-            .catch((err) => {
-                Log.Error("Couldn't fetch package.json: " + err);
-                Array.from(document.getElementsByClassName('noVNC_version_wrapper'))
-                    .concat(Array.from(document.getElementsByClassName('noVNC_version_separator')))
-                    .forEach(el => el.style.display = 'none');
-            });
-
         // Adapt the interface for touch screen devices
         if (isTouchDevice) {
             document.documentElement.classList.add("noVNC_touch");
@@ -146,20 +135,9 @@ const UI = {
         UI.initSetting('logging', 'warn');
         UI.updateLogging();
 
-        // if port == 80 (or 443) then it won't be present and should be
-        // set manually
-        let port = window.location.port;
-        if (!port) {
-            if (window.location.protocol.substring(0, 5) == 'https') {
-                port = 443;
-            } else if (window.location.protocol.substring(0, 4) == 'http') {
-                port = 80;
-            }
-        }
-
         /* Populate the controls if defaults are provided in the URL */
-        UI.initSetting('host', window.location.hostname);
-        UI.initSetting('port', port);
+        UI.initSetting('host', 'localhost');
+        UI.initSetting('port', 21117);
         UI.initSetting('encrypt', (window.location.protocol === "https:"));
         UI.initSetting('view_clip', false);
         UI.initSetting('resize', 'off');
@@ -167,7 +145,7 @@ const UI = {
         UI.initSetting('shared', true);
         UI.initSetting('view_only', false);
         UI.initSetting('show_dot', false);
-        UI.initSetting('path', 'websockify');
+        UI.initSetting('path', '');
         UI.initSetting('repeaterID', '');
         UI.initSetting('reconnect', false);
         UI.initSetting('reconnect_delay', 5000);
