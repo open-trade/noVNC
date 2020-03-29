@@ -15,19 +15,11 @@
 import * as Log from './util/logging.js';
 import * as proto from '../message.js';
 
-// this has performance issues in some versions Chromium, and
-// doesn't gain a tremendous amount of performance increase in Firefox
-// at the moment.  It may be valuable to turn it on in the future.
-// Also copyWithin() for TypedArrays is not supported in IE 11 or
-// Safari 13 (at the moment we want to support Safari 11).
-const ENABLE_COPYWITHIN = false;
-const MAX_RQ_GROW_SIZE = 40 * 1024 * 1024;  // 40 MiB
-
 export default class Websock {
     constructor() {
         this._websocket = null;  // WebSocket object
         this._eventHandlers = {
-            message: () => {},
+            message: (msg) => {},
             open: () => {},
             close: () => {},
             error: () => {}
@@ -92,7 +84,7 @@ export default class Websock {
 
     _recv_message(e) {
         const u8 = new Uint8Array(e.data);
-        let msg = decodeMessage(u8);
-        this._eventHandlers.message();
+        const msg = proto.decodeMessage(u8);
+        this._eventHandlers.message(msg);
     }
 }

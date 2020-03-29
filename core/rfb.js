@@ -205,8 +205,8 @@ export default class RFB extends EventTargetMixin {
         this._mouse.onmousemove = this._handleMouseMove.bind(this);
 
         this._sock = new Websock();
-        this._sock.on('message', () => {
-            this._handle_message();
+        this._sock.on('message', (msg) => {
+            this._handle_message(msg);
         });
         this._sock.on('open', () => {
             if ((this._rfb_connection_state === 'connecting') &&
@@ -764,12 +764,7 @@ export default class RFB extends EventTargetMixin {
                                            { detail: { capabilities: this._capabilities } }));
     }
 
-    _handle_message() {
-        if (this._sock.rQlen === 0) {
-            Log.Warn("handle_message called on an empty receive queue");
-            return;
-        }
-
+    _handle_message(msg) {
         switch (this._rfb_connection_state) {
             case 'disconnected':
                 Log.Error("Got data while disconnected");
@@ -780,9 +775,6 @@ export default class RFB extends EventTargetMixin {
                         break;
                     }
                     if (!this._normal_msg()) {
-                        break;
-                    }
-                    if (this._sock.rQlen === 0) {
                         break;
                     }
                 }
