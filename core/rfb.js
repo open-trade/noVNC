@@ -71,20 +71,14 @@ export default class RFB extends EventTargetMixin {
         options = options || {};
         this._rfb_credentials = options.credentials || {};
         this._challenge = '';
+        this._server_info = {};
         this._shared = 'shared' in options ? !!options.shared : true;
         this._repeaterID = options.repeaterID || '';
         this._wsProtocols = options.wsProtocols || [];
 
         // Internal state
         this._rfb_connection_state = '';
-        this._rfb_auth_scheme = -1;
         this._rfb_clean_disconnect = true;
-
-        // Server capabilities
-        this._rfb_version = 0;
-        this._rfb_max_version = 3.8;
-        this._rfb_tightvnc = false;
-        this._rfb_xvp_ver = 0;
 
         this._fb_width = 0;
         this._fb_height = 0;
@@ -92,11 +86,6 @@ export default class RFB extends EventTargetMixin {
         this._fb_name = "";
 
         this._capabilities = { power: false };
-
-        this._supportsFence = false;
-
-        this._supportsContinuousUpdates = false;
-        this._enabledContinuousUpdates = false;
 
         this._supportsSetDesktopSize = false;
         this._screen_id = 0;
@@ -390,15 +379,12 @@ export default class RFB extends EventTargetMixin {
     }
 
     machineShutdown() {
-        this._xvpOp(1, 2);
     }
 
     machineReboot() {
-        this._xvpOp(1, 3);
     }
 
     machineReset() {
-        this._xvpOp(1, 4);
     }
 
     // Send a key press. If 'down' is not specified then send a down key
@@ -883,39 +869,44 @@ export default class RFB extends EventTargetMixin {
         }
     }
 
-    _negotiate_server_init() {
-        // NB(directxman12): these are down here so that we don't run them multiple times
-        //                   if we backtrack
+    _negotiate_server_init(server_info) {
+        this._server_info = server_info;
+        const { username, displays } = server_info;
+        let width, height;
+        if (displays) {
+            displays.forEach((d) => {
+                if (!d.primary) return;
+                width = d.width;
+                height = d.height;
+                server_info.primary = d.name;
+            });
+        }
         Log.Info("Screen: " + width + "x" + height);
 
         // we're past the point where we could backtrack, so it's safe to call this
-        this._setDesktopName(name);
+        this._setDesktopName(username);
         this._resize(width, height);
 
         if (!this._viewOnly) { this._keyboard.grab(); }
         if (!this._viewOnly) { this._mouse.grab(); }
 
-        this._fb_depth = 24;
-
-        if (this._fb_name === "Intel(r) AMT KVM") {
-            Log.Warn("Intel AMT KVM only supports 8/16 bit depths. Using low color mode.");
-            this._fb_depth = 8;
-        }
-
-        RFB.messages.pixelFormat(this._sock, this._fb_depth, true);
-        this._sendEncodings();
-        RFB.messages.fbUpdateRequest(this._sock, false, 0, 0, this._fb_width, this._fb_height);
-
         this._updateConnectionState('connected');
-        return true;
     }
 
     _init_msg(msg) {
         if (msg.challenge) {
-            this.challenge = this.challenge;
+            this.challenge = this._challenge;
             this._negotiate_std_vnc_auth();
         } else if (msg.login_response) {
-            console.log(msg);
+            const { error, server_info } = msg.login_response;
+            if (error) {
+                this.dispatchEvent(new CustomEvent(
+                    "securityfailure",
+                    { detail: { status: error } }));
+                return this._fail("Login failed: " + error);
+            } else if (server_info) {
+                this._negotiate_server_init(server_info);
+            }
         }
     }
 
@@ -1112,71 +1103,6 @@ export default class RFB extends EventTargetMixin {
         return true;
     }
 
-    _handle_server_fence_msg() {
-        if (this._sock.rQwait("ServerFence header", 8, 1)) { return false; }
-        this._sock.rQskipBytes(3); // Padding
-        let flags = this._sock.rQshift32();
-        let length = this._sock.rQshift8();
-
-        if (this._sock.rQwait("ServerFence payload", length, 9)) { return false; }
-
-        if (length > 64) {
-            Log.Warn("Bad payload length (" + length + ") in fence response");
-            length = 64;
-        }
-
-        const payload = this._sock.rQshiftStr(length);
-
-        this._supportsFence = true;
-
-        /*
-         * Fence flags
-         *
-         *  (1<<0)  - BlockBefore
-         *  (1<<1)  - BlockAfter
-         *  (1<<2)  - SyncNext
-         *  (1<<31) - Request
-         */
-
-        if (!(flags & (1<<31))) {
-            return this._fail("Unexpected fence response");
-        }
-
-        // Filter out unsupported flags
-        // FIXME: support syncNext
-        flags &= (1<<0) | (1<<1);
-
-        // BlockBefore and BlockAfter are automatically handled by
-        // the fact that we process each incoming message
-        // synchronuosly.
-        RFB.messages.clientFence(this._sock, flags, payload);
-
-        return true;
-    }
-
-    _handle_xvp_msg() {
-        if (this._sock.rQwait("XVP version and message", 3, 1)) { return false; }
-        this._sock.rQskipBytes(1);  // Padding
-        const xvp_ver = this._sock.rQshift8();
-        const xvp_msg = this._sock.rQshift8();
-
-        switch (xvp_msg) {
-            case 0:  // XVP_FAIL
-                Log.Error("XVP Operation Failed");
-                break;
-            case 1:  // XVP_INIT
-                this._rfb_xvp_ver = xvp_ver;
-                Log.Info("XVP extensions enabled (version " + this._rfb_xvp_ver + ")");
-                this._setCapability("power", true);
-                break;
-            default:
-                this._fail("Illegal server XVP message (msg: " + xvp_msg + ")");
-                break;
-        }
-
-        return true;
-    }
-
     _normal_msg(msg) {
         let msg_type;
         if (this._FBU.rects > 0) {
@@ -1224,9 +1150,6 @@ export default class RFB extends EventTargetMixin {
 
             case 248: // ServerFence
                 return this._handle_server_fence_msg();
-
-            case 250:  // XVP
-                return this._handle_xvp_msg();
 
             default:
                 this._fail("Unexpected server message (type " + msg_type + ")");
@@ -1304,9 +1227,6 @@ export default class RFB extends EventTargetMixin {
                     // Do nothing
                 }
                 return true;
-
-            case encodings.pseudoEncodingDesktopName:
-                return this._handleDesktopName();
 
             case encodings.pseudoEncodingDesktopSize:
                 this._resize(this._FBU.width, this._FBU.height);
@@ -1487,7 +1407,6 @@ export default class RFB extends EventTargetMixin {
         let name = this._sock.rQshiftStr(length);
         name = decodeUTF8(name, true);
 
-        this._setDesktopName(name);
 
         return true;
     }
@@ -1586,13 +1505,6 @@ export default class RFB extends EventTargetMixin {
         }
     }
 
-    _updateContinuousUpdates() {
-        if (!this._enabledContinuousUpdates) { return; }
-
-        RFB.messages.enableContinuousUpdates(this._sock, true, 0, 0,
-                                             this._fb_width, this._fb_height);
-    }
-
     _resize(width, height) {
         this._fb_width = width;
         this._fb_height = height;
@@ -1602,14 +1514,6 @@ export default class RFB extends EventTargetMixin {
         // Adjust the visible viewport based on the new dimensions
         this._updateClip();
         this._updateScale();
-
-        this._updateContinuousUpdates();
-    }
-
-    _xvpOp(ver, op) {
-        if (this._rfb_xvp_ver < ver) { return; }
-        Log.Info("Sending XVP operation " + op + " (version " + ver + ")");
-        RFB.messages.xvpOp(this._sock, ver, op);
     }
 
     _updateCursor(rgba, hotx, hoty, w, h) {
@@ -1874,202 +1778,6 @@ RFB.messages = {
         }
 
     },
-
-    setDesktopSize(sock, width, height, id, flags) {
-        const buff = sock._sQ;
-        const offset = sock._sQlen;
-
-        buff[offset] = 251;              // msg-type
-        buff[offset + 1] = 0;            // padding
-        buff[offset + 2] = width >> 8;   // width
-        buff[offset + 3] = width;
-        buff[offset + 4] = height >> 8;  // height
-        buff[offset + 5] = height;
-
-        buff[offset + 6] = 1;            // number-of-screens
-        buff[offset + 7] = 0;            // padding
-
-        // screen array
-        buff[offset + 8] = id >> 24;     // id
-        buff[offset + 9] = id >> 16;
-        buff[offset + 10] = id >> 8;
-        buff[offset + 11] = id;
-        buff[offset + 12] = 0;           // x-position
-        buff[offset + 13] = 0;
-        buff[offset + 14] = 0;           // y-position
-        buff[offset + 15] = 0;
-        buff[offset + 16] = width >> 8;  // width
-        buff[offset + 17] = width;
-        buff[offset + 18] = height >> 8; // height
-        buff[offset + 19] = height;
-        buff[offset + 20] = flags >> 24; // flags
-        buff[offset + 21] = flags >> 16;
-        buff[offset + 22] = flags >> 8;
-        buff[offset + 23] = flags;
-
-        sock._sQlen += 24;
-        sock.flush();
-    },
-
-    clientFence(sock, flags, payload) {
-        const buff = sock._sQ;
-        const offset = sock._sQlen;
-
-        buff[offset] = 248; // msg-type
-
-        buff[offset + 1] = 0; // padding
-        buff[offset + 2] = 0; // padding
-        buff[offset + 3] = 0; // padding
-
-        buff[offset + 4] = flags >> 24; // flags
-        buff[offset + 5] = flags >> 16;
-        buff[offset + 6] = flags >> 8;
-        buff[offset + 7] = flags;
-
-        const n = payload.length;
-
-        buff[offset + 8] = n; // length
-
-        for (let i = 0; i < n; i++) {
-            buff[offset + 9 + i] = payload.charCodeAt(i);
-        }
-
-        sock._sQlen += 9 + n;
-        sock.flush();
-    },
-
-    enableContinuousUpdates(sock, enable, x, y, width, height) {
-        const buff = sock._sQ;
-        const offset = sock._sQlen;
-
-        buff[offset] = 150;             // msg-type
-        buff[offset + 1] = enable;      // enable-flag
-
-        buff[offset + 2] = x >> 8;      // x
-        buff[offset + 3] = x;
-        buff[offset + 4] = y >> 8;      // y
-        buff[offset + 5] = y;
-        buff[offset + 6] = width >> 8;  // width
-        buff[offset + 7] = width;
-        buff[offset + 8] = height >> 8; // height
-        buff[offset + 9] = height;
-
-        sock._sQlen += 10;
-        sock.flush();
-    },
-
-    pixelFormat(sock, depth, true_color) {
-        const buff = sock._sQ;
-        const offset = sock._sQlen;
-
-        let bpp;
-
-        if (depth > 16) {
-            bpp = 32;
-        } else if (depth > 8) {
-            bpp = 16;
-        } else {
-            bpp = 8;
-        }
-
-        const bits = Math.floor(depth/3);
-
-        buff[offset] = 0;  // msg-type
-
-        buff[offset + 1] = 0; // padding
-        buff[offset + 2] = 0; // padding
-        buff[offset + 3] = 0; // padding
-
-        buff[offset + 4] = bpp;                 // bits-per-pixel
-        buff[offset + 5] = depth;               // depth
-        buff[offset + 6] = 0;                   // little-endian
-        buff[offset + 7] = true_color ? 1 : 0;  // true-color
-
-        buff[offset + 8] = 0;    // red-max
-        buff[offset + 9] = (1 << bits) - 1;  // red-max
-
-        buff[offset + 10] = 0;   // green-max
-        buff[offset + 11] = (1 << bits) - 1; // green-max
-
-        buff[offset + 12] = 0;   // blue-max
-        buff[offset + 13] = (1 << bits) - 1; // blue-max
-
-        buff[offset + 14] = bits * 2; // red-shift
-        buff[offset + 15] = bits * 1; // green-shift
-        buff[offset + 16] = bits * 0; // blue-shift
-
-        buff[offset + 17] = 0;   // padding
-        buff[offset + 18] = 0;   // padding
-        buff[offset + 19] = 0;   // padding
-
-        sock._sQlen += 20;
-        sock.flush();
-    },
-
-    clientEncodings(sock, encodings) {
-        const buff = sock._sQ;
-        const offset = sock._sQlen;
-
-        buff[offset] = 2; // msg-type
-        buff[offset + 1] = 0; // padding
-
-        buff[offset + 2] = encodings.length >> 8;
-        buff[offset + 3] = encodings.length;
-
-        let j = offset + 4;
-        for (let i = 0; i < encodings.length; i++) {
-            const enc = encodings[i];
-            buff[j] = enc >> 24;
-            buff[j + 1] = enc >> 16;
-            buff[j + 2] = enc >> 8;
-            buff[j + 3] = enc;
-
-            j += 4;
-        }
-
-        sock._sQlen += j - offset;
-        sock.flush();
-    },
-
-    fbUpdateRequest(sock, incremental, x, y, w, h) {
-        const buff = sock._sQ;
-        const offset = sock._sQlen;
-
-        if (typeof(x) === "undefined") { x = 0; }
-        if (typeof(y) === "undefined") { y = 0; }
-
-        buff[offset] = 3;  // msg-type
-        buff[offset + 1] = incremental ? 1 : 0;
-
-        buff[offset + 2] = (x >> 8) & 0xFF;
-        buff[offset + 3] = x & 0xFF;
-
-        buff[offset + 4] = (y >> 8) & 0xFF;
-        buff[offset + 5] = y & 0xFF;
-
-        buff[offset + 6] = (w >> 8) & 0xFF;
-        buff[offset + 7] = w & 0xFF;
-
-        buff[offset + 8] = (h >> 8) & 0xFF;
-        buff[offset + 9] = h & 0xFF;
-
-        sock._sQlen += 10;
-        sock.flush();
-    },
-
-    xvpOp(sock, ver, op) {
-        const buff = sock._sQ;
-        const offset = sock._sQlen;
-
-        buff[offset] = 250; // msg-type
-        buff[offset + 1] = 0; // padding
-
-        buff[offset + 2] = ver;
-        buff[offset + 3] = op;
-
-        sock._sQlen += 4;
-        sock.flush();
-    }
 };
 
 RFB.cursors = {
