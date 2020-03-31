@@ -1232,9 +1232,6 @@ export default class RFB extends EventTargetMixin {
                 this._resize(this._FBU.width, this._FBU.height);
                 return true;
 
-            case encodings.pseudoEncodingExtendedDesktopSize:
-                return this._handleExtendedDesktopSize();
-
             default:
                 return this._handleDataRect();
         }
@@ -1389,81 +1386,6 @@ export default class RFB extends EventTargetMixin {
         }
 
         this._updateCursor(rgba, hotx, hoty, w, h);
-
-        return true;
-    }
-
-    _handleExtendedDesktopSize() {
-        if (this._sock.rQwait("ExtendedDesktopSize", 4)) {
-            return false;
-        }
-
-        const number_of_screens = this._sock.rQpeek8();
-
-        let bytes = 4 + (number_of_screens * 16);
-        if (this._sock.rQwait("ExtendedDesktopSize", bytes)) {
-            return false;
-        }
-
-        const firstUpdate = !this._supportsSetDesktopSize;
-        this._supportsSetDesktopSize = true;
-
-        // Normally we only apply the current resize mode after a
-        // window resize event. However there is no such trigger on the
-        // initial connect. And we don't know if the server supports
-        // resizing until we've gotten here.
-        if (firstUpdate) {
-            this._requestRemoteResize();
-        }
-
-        this._sock.rQskipBytes(1);  // number-of-screens
-        this._sock.rQskipBytes(3);  // padding
-
-        for (let i = 0; i < number_of_screens; i += 1) {
-            // Save the id and flags of the first screen
-            if (i === 0) {
-                this._screen_id = this._sock.rQshiftBytes(4);    // id
-                this._sock.rQskipBytes(2);                       // x-position
-                this._sock.rQskipBytes(2);                       // y-position
-                this._sock.rQskipBytes(2);                       // width
-                this._sock.rQskipBytes(2);                       // height
-                this._screen_flags = this._sock.rQshiftBytes(4); // flags
-            } else {
-                this._sock.rQskipBytes(16);
-            }
-        }
-
-        /*
-         * The x-position indicates the reason for the change:
-         *
-         *  0 - server resized on its own
-         *  1 - this client requested the resize
-         *  2 - another client requested the resize
-         */
-
-        // We need to handle errors when we requested the resize.
-        if (this._FBU.x === 1 && this._FBU.y !== 0) {
-            let msg = "";
-            // The y-position indicates the status code from the server
-            switch (this._FBU.y) {
-                case 1:
-                    msg = "Resize is administratively prohibited";
-                    break;
-                case 2:
-                    msg = "Out of resources";
-                    break;
-                case 3:
-                    msg = "Invalid screen layout";
-                    break;
-                default:
-                    msg = "Unknown reason";
-                    break;
-            }
-            Log.Warn("Server did not accept the resize request: "
-                     + msg);
-        } else {
-            this._resize(this._FBU.width, this._FBU.height);
-        }
 
         return true;
     }
