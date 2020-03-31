@@ -1393,24 +1393,6 @@ export default class RFB extends EventTargetMixin {
         return true;
     }
 
-    _handleDesktopName() {
-        if (this._sock.rQwait("DesktopName", 4)) {
-            return false;
-        }
-
-        let length = this._sock.rQshift32();
-
-        if (this._sock.rQwait("DesktopName", length, 4)) {
-            return false;
-        }
-
-        let name = this._sock.rQshiftStr(length);
-        name = decodeUTF8(name, true);
-
-
-        return true;
-    }
-
     _handleExtendedDesktopSize() {
         if (this._sock.rQwait("ExtendedDesktopSize", 4)) {
             return false;
