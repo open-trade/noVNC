@@ -70,13 +70,13 @@ export default class RFB extends EventTargetMixin {
         // Connection details
         options = options || {};
         this._rfb_credentials = options.credentials || {};
+        this._challenge = '';
         this._shared = 'shared' in options ? !!options.shared : true;
         this._repeaterID = options.repeaterID || '';
         this._wsProtocols = options.wsProtocols || [];
 
         // Internal state
         this._rfb_connection_state = '';
-        this._rfb_init_state = '';
         this._rfb_auth_scheme = -1;
         this._rfb_clean_disconnect = true;
 
@@ -209,9 +209,7 @@ export default class RFB extends EventTargetMixin {
             this._handle_message(msg);
         });
         this._sock.on('open', () => {
-            if ((this._rfb_connection_state === 'connecting') &&
-                (this._rfb_init_state === '')) {
-                this._rfb_init_state = 'ProtocolVersion';
+            if (this._rfb_connection_state === 'connecting') {
                 Log.Debug("Starting VNC handshake");
                 let tmp = window.location.href.split('?');
                 if (tmp.length) {
@@ -376,7 +374,7 @@ export default class RFB extends EventTargetMixin {
 
     sendCredentials(creds) {
         this._rfb_credentials = creds;
-        setTimeout(this._init_msg.bind(this), 0);
+        this._negotiate_std_vnc_auth();
     }
 
     sendCtrlAltDel() {
@@ -774,13 +772,13 @@ export default class RFB extends EventTargetMixin {
                     if (this._flushing) {
                         break;
                     }
-                    if (!this._normal_msg()) {
+                    if (!this._normal_msg(msg)) {
                         break;
                     }
                 }
                 break;
             default:
-                this._init_msg();
+                this._init_msg(msg);
                 break;
         }
     }
@@ -854,117 +852,6 @@ export default class RFB extends EventTargetMixin {
 
     // Message Handlers
 
-    _negotiate_protocol_version() {
-        if (this._sock.rQwait("version", 12)) {
-            return false;
-        }
-
-        const sversion = this._sock.rQshiftStr(12).substr(4, 7);
-        Log.Info("Server ProtocolVersion: " + sversion);
-        let is_repeater = 0;
-        switch (sversion) {
-            case "000.000":  // UltraVNC repeater
-                is_repeater = 1;
-                break;
-            case "003.003":
-            case "003.006":  // UltraVNC
-            case "003.889":  // Apple Remote Desktop
-                this._rfb_version = 3.3;
-                break;
-            case "003.007":
-                this._rfb_version = 3.7;
-                break;
-            case "003.008":
-            case "004.000":  // Intel AMT KVM
-            case "004.001":  // RealVNC 4.6
-            case "005.000":  // RealVNC 5.3
-                this._rfb_version = 3.8;
-                break;
-            default:
-                return this._fail("Invalid server version " + sversion);
-        }
-
-        if (is_repeater) {
-            let repeaterID = "ID:" + this._repeaterID;
-            while (repeaterID.length < 250) {
-                repeaterID += "\0";
-            }
-            this._sock.send_string(repeaterID);
-            return true;
-        }
-
-        if (this._rfb_version > this._rfb_max_version) {
-            this._rfb_version = this._rfb_max_version;
-        }
-
-        const cversion = "00" + parseInt(this._rfb_version, 10) +
-                       ".00" + ((this._rfb_version * 10) % 10);
-        this._sock.send_string("RFB " + cversion + "\n");
-        Log.Debug('Sent ProtocolVersion: ' + cversion);
-
-        this._rfb_init_state = 'Security';
-    }
-
-    _negotiate_security() {
-        // Polyfill since IE and PhantomJS doesn't have
-        // TypedArray.includes()
-        function includes(item, array) {
-            for (let i = 0; i < array.length; i++) {
-                if (array[i] === item) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        if (this._rfb_version >= 3.7) {
-            // Server sends supported list, client decides
-            const num_types = this._sock.rQshift8();
-            if (this._sock.rQwait("security type", num_types, 1)) { return false; }
-
-            if (num_types === 0) {
-                this._rfb_init_state = "SecurityReason";
-                this._security_context = "no security types";
-                this._security_status = 1;
-                return this._init_msg();
-            }
-
-            const types = this._sock.rQshiftBytes(num_types);
-            Log.Debug("Server security types: " + types);
-
-            // Look for each auth in preferred order
-            if (includes(1, types)) {
-                this._rfb_auth_scheme = 1; // None
-            } else if (includes(22, types)) {
-                this._rfb_auth_scheme = 22; // XVP
-            } else if (includes(16, types)) {
-                this._rfb_auth_scheme = 16; // Tight
-            } else if (includes(2, types)) {
-                this._rfb_auth_scheme = 2; // VNC Auth
-            } else {
-                return this._fail("Unsupported security types (types: " + types + ")");
-            }
-
-            this._sock.send([this._rfb_auth_scheme]);
-        } else {
-            // Server decides
-            if (this._sock.rQwait("security scheme", 4)) { return false; }
-            this._rfb_auth_scheme = this._sock.rQshift32();
-
-            if (this._rfb_auth_scheme == 0) {
-                this._rfb_init_state = "SecurityReason";
-                this._security_context = "authentication scheme";
-                this._security_status = 1;
-                return this._init_msg();
-            }
-        }
-
-        this._rfb_init_state = 'Authentication';
-        Log.Debug('Authenticating using scheme: ' + this._rfb_auth_scheme);
-
-        return this._init_msg(); // jump to authentication
-    }
-
     _handle_security_reason() {
         if (this._sock.rQwait("reason length", 4)) {
             return false;
@@ -996,286 +883,10 @@ export default class RFB extends EventTargetMixin {
         }
     }
 
-    // authentication
-    _negotiate_xvp_auth() {
-        if (this._rfb_credentials.username === undefined ||
-            this._rfb_credentials.password === undefined ||
-            this._rfb_credentials.target === undefined) {
-            this.dispatchEvent(new CustomEvent(
-                "credentialsrequired",
-                { detail: { types: ["username", "password", "target"] } }));
-            return false;
-        }
-
-        const xvp_auth_str = String.fromCharCode(this._rfb_credentials.username.length) +
-                           String.fromCharCode(this._rfb_credentials.target.length) +
-                           this._rfb_credentials.username +
-                           this._rfb_credentials.target;
-        this._sock.send_string(xvp_auth_str);
-        this._rfb_auth_scheme = 2;
-        return this._negotiate_authentication();
-    }
-
-    _negotiate_std_vnc_auth() {
-        if (this._sock.rQwait("auth challenge", 16)) { return false; }
-
-        if (this._rfb_credentials.password === undefined) {
-            this.dispatchEvent(new CustomEvent(
-                "credentialsrequired",
-                { detail: { types: ["password"] } }));
-            return false;
-        }
-
-        // TODO(directxman12): make genDES not require an Array
-        const challenge = Array.prototype.slice.call(this._sock.rQshiftBytes(16));
-        const response = RFB.genDES(this._rfb_credentials.password, challenge);
-        this._sock.send(response);
-        this._rfb_init_state = "SecurityResult";
-        return true;
-    }
-
-    _negotiate_tight_unix_auth() {
-        if (this._rfb_credentials.username === undefined ||
-            this._rfb_credentials.password === undefined) {
-            this.dispatchEvent(new CustomEvent(
-                "credentialsrequired",
-                { detail: { types: ["username", "password"] } }));
-            return false;
-        }
-
-        this._sock.send([0, 0, 0, this._rfb_credentials.username.length]);
-        this._sock.send([0, 0, 0, this._rfb_credentials.password.length]);
-        this._sock.send_string(this._rfb_credentials.username);
-        this._sock.send_string(this._rfb_credentials.password);
-        this._rfb_init_state = "SecurityResult";
-        return true;
-    }
-
-    _negotiate_tight_tunnels(numTunnels) {
-        const clientSupportedTunnelTypes = {
-            0: { vendor: 'TGHT', signature: 'NOTUNNEL' }
-        };
-        const serverSupportedTunnelTypes = {};
-        // receive tunnel capabilities
-        for (let i = 0; i < numTunnels; i++) {
-            const cap_code = this._sock.rQshift32();
-            const cap_vendor = this._sock.rQshiftStr(4);
-            const cap_signature = this._sock.rQshiftStr(8);
-            serverSupportedTunnelTypes[cap_code] = { vendor: cap_vendor, signature: cap_signature };
-        }
-
-        Log.Debug("Server Tight tunnel types: " + serverSupportedTunnelTypes);
-
-        // Siemens touch panels have a VNC server that supports NOTUNNEL,
-        // but forgets to advertise it. Try to detect such servers by
-        // looking for their custom tunnel type.
-        if (serverSupportedTunnelTypes[1] &&
-            (serverSupportedTunnelTypes[1].vendor === "SICR") &&
-            (serverSupportedTunnelTypes[1].signature === "SCHANNEL")) {
-            Log.Debug("Detected Siemens server. Assuming NOTUNNEL support.");
-            serverSupportedTunnelTypes[0] = { vendor: 'TGHT', signature: 'NOTUNNEL' };
-        }
-
-        // choose the notunnel type
-        if (serverSupportedTunnelTypes[0]) {
-            if (serverSupportedTunnelTypes[0].vendor != clientSupportedTunnelTypes[0].vendor ||
-                serverSupportedTunnelTypes[0].signature != clientSupportedTunnelTypes[0].signature) {
-                return this._fail("Client's tunnel type had the incorrect " +
-                                  "vendor or signature");
-            }
-            Log.Debug("Selected tunnel type: " + clientSupportedTunnelTypes[0]);
-            this._sock.send([0, 0, 0, 0]);  // use NOTUNNEL
-            return false; // wait until we receive the sub auth count to continue
-        } else {
-            return this._fail("Server wanted tunnels, but doesn't support " +
-                              "the notunnel type");
-        }
-    }
-
-    _negotiate_tight_auth() {
-        if (!this._rfb_tightvnc) {  // first pass, do the tunnel negotiation
-            if (this._sock.rQwait("num tunnels", 4)) { return false; }
-            const numTunnels = this._sock.rQshift32();
-            if (numTunnels > 0 && this._sock.rQwait("tunnel capabilities", 16 * numTunnels, 4)) { return false; }
-
-            this._rfb_tightvnc = true;
-
-            if (numTunnels > 0) {
-                this._negotiate_tight_tunnels(numTunnels);
-                return false;  // wait until we receive the sub auth to continue
-            }
-        }
-
-        // second pass, do the sub-auth negotiation
-        if (this._sock.rQwait("sub auth count", 4)) { return false; }
-        const subAuthCount = this._sock.rQshift32();
-        if (subAuthCount === 0) {  // empty sub-auth list received means 'no auth' subtype selected
-            this._rfb_init_state = 'SecurityResult';
-            return true;
-        }
-
-        if (this._sock.rQwait("sub auth capabilities", 16 * subAuthCount, 4)) { return false; }
-
-        const clientSupportedTypes = {
-            'STDVNOAUTH__': 1,
-            'STDVVNCAUTH_': 2,
-            'TGHTULGNAUTH': 129
-        };
-
-        const serverSupportedTypes = [];
-
-        for (let i = 0; i < subAuthCount; i++) {
-            this._sock.rQshift32(); // capNum
-            const capabilities = this._sock.rQshiftStr(12);
-            serverSupportedTypes.push(capabilities);
-        }
-
-        Log.Debug("Server Tight authentication types: " + serverSupportedTypes);
-
-        for (let authType in clientSupportedTypes) {
-            if (serverSupportedTypes.indexOf(authType) != -1) {
-                this._sock.send([0, 0, 0, clientSupportedTypes[authType]]);
-                Log.Debug("Selected authentication type: " + authType);
-
-                switch (authType) {
-                    case 'STDVNOAUTH__':  // no auth
-                        this._rfb_init_state = 'SecurityResult';
-                        return true;
-                    case 'STDVVNCAUTH_': // VNC auth
-                        this._rfb_auth_scheme = 2;
-                        return this._init_msg();
-                    case 'TGHTULGNAUTH': // UNIX auth
-                        this._rfb_auth_scheme = 129;
-                        return this._init_msg();
-                    default:
-                        return this._fail("Unsupported tiny auth scheme " +
-                                          "(scheme: " + authType + ")");
-                }
-            }
-        }
-
-        return this._fail("No supported sub-auth types!");
-    }
-
-    _negotiate_authentication() {
-        switch (this._rfb_auth_scheme) {
-            case 1:  // no auth
-                if (this._rfb_version >= 3.8) {
-                    this._rfb_init_state = 'SecurityResult';
-                    return true;
-                }
-                this._rfb_init_state = 'ClientInitialisation';
-                return this._init_msg();
-
-            case 22:  // XVP auth
-                return this._negotiate_xvp_auth();
-
-            case 2:  // VNC authentication
-                return this._negotiate_std_vnc_auth();
-
-            case 16:  // TightVNC Security Type
-                return this._negotiate_tight_auth();
-
-            case 129:  // TightVNC UNIX Security Type
-                return this._negotiate_tight_unix_auth();
-
-            default:
-                return this._fail("Unsupported auth scheme (scheme: " +
-                                  this._rfb_auth_scheme + ")");
-        }
-    }
-
-    _handle_security_result() {
-        if (this._sock.rQwait('VNC auth response ', 4)) { return false; }
-
-        const status = this._sock.rQshift32();
-
-        if (status === 0) { // OK
-            this._rfb_init_state = 'ClientInitialisation';
-            Log.Debug('Authentication OK');
-            return this._init_msg();
-        } else {
-            if (this._rfb_version >= 3.8) {
-                this._rfb_init_state = "SecurityReason";
-                this._security_context = "security result";
-                this._security_status = status;
-                return this._init_msg();
-            } else {
-                this.dispatchEvent(new CustomEvent(
-                    "securityfailure",
-                    { detail: { status: status } }));
-
-                return this._fail("Security handshake failed");
-            }
-        }
-    }
-
     _negotiate_server_init() {
-        if (this._sock.rQwait("server initialization", 24)) { return false; }
-
-        /* Screen size */
-        const width = this._sock.rQshift16();
-        const height = this._sock.rQshift16();
-
-        /* PIXEL_FORMAT */
-        const bpp         = this._sock.rQshift8();
-        const depth       = this._sock.rQshift8();
-        const big_endian  = this._sock.rQshift8();
-        const true_color  = this._sock.rQshift8();
-
-        const red_max     = this._sock.rQshift16();
-        const green_max   = this._sock.rQshift16();
-        const blue_max    = this._sock.rQshift16();
-        const red_shift   = this._sock.rQshift8();
-        const green_shift = this._sock.rQshift8();
-        const blue_shift  = this._sock.rQshift8();
-        this._sock.rQskipBytes(3);  // padding
-
-        // NB(directxman12): we don't want to call any callbacks or print messages until
-        //                   *after* we're past the point where we could backtrack
-
-        /* Connection name/title */
-        const name_length = this._sock.rQshift32();
-        if (this._sock.rQwait('server init name', name_length, 24)) { return false; }
-        let name = this._sock.rQshiftStr(name_length);
-        name = decodeUTF8(name, true);
-
-        if (this._rfb_tightvnc) {
-            if (this._sock.rQwait('TightVNC extended server init header', 8, 24 + name_length)) { return false; }
-            // In TightVNC mode, ServerInit message is extended
-            const numServerMessages = this._sock.rQshift16();
-            const numClientMessages = this._sock.rQshift16();
-            const numEncodings = this._sock.rQshift16();
-            this._sock.rQskipBytes(2);  // padding
-
-            const totalMessagesLength = (numServerMessages + numClientMessages + numEncodings) * 16;
-            if (this._sock.rQwait('TightVNC extended server init header', totalMessagesLength, 32 + name_length)) { return false; }
-
-            // we don't actually do anything with the capability information that TIGHT sends,
-            // so we just skip the all of this.
-
-            // TIGHT server message capabilities
-            this._sock.rQskipBytes(16 * numServerMessages);
-
-            // TIGHT client message capabilities
-            this._sock.rQskipBytes(16 * numClientMessages);
-
-            // TIGHT encoding capabilities
-            this._sock.rQskipBytes(16 * numEncodings);
-        }
-
         // NB(directxman12): these are down here so that we don't run them multiple times
         //                   if we backtrack
-        Log.Info("Screen: " + width + "x" + height +
-                  ", bpp: " + bpp + ", depth: " + depth +
-                  ", big_endian: " + big_endian +
-                  ", true_color: " + true_color +
-                  ", red_max: " + red_max +
-                  ", green_max: " + green_max +
-                  ", blue_max: " + blue_max +
-                  ", red_shift: " + red_shift +
-                  ", green_shift: " + green_shift +
-                  ", blue_shift: " + blue_shift);
+        Log.Info("Screen: " + width + "x" + height);
 
         // we're past the point where we could backtrack, so it's safe to call this
         this._setDesktopName(name);
@@ -1299,79 +910,32 @@ export default class RFB extends EventTargetMixin {
         return true;
     }
 
-    _sendEncodings() {
-        const encs = [];
-
-        // In preference order
-        encs.push(encodings.encodingCopyRect);
-        // Only supported with full depth support
-        if (this._fb_depth == 24) {
-            encs.push(encodings.encodingTight);
-            encs.push(encodings.encodingTightPNG);
-            encs.push(encodings.encodingHextile);
-            encs.push(encodings.encodingRRE);
+    _init_msg(msg) {
+        if (msg.challenge) {
+            this.challenge = this.challenge;
+            this._negotiate_std_vnc_auth();
+        } else if (msg.login_response) {
+            console.log(msg);
         }
-        encs.push(encodings.encodingRaw);
-
-        // Psuedo-encoding settings
-        encs.push(encodings.pseudoEncodingQualityLevel0 + this._qualityLevel);
-        encs.push(encodings.pseudoEncodingCompressLevel0 + 2);
-
-        encs.push(encodings.pseudoEncodingDesktopSize);
-        encs.push(encodings.pseudoEncodingLastRect);
-        encs.push(encodings.pseudoEncodingQEMUExtendedKeyEvent);
-        encs.push(encodings.pseudoEncodingExtendedDesktopSize);
-        encs.push(encodings.pseudoEncodingXvp);
-        encs.push(encodings.pseudoEncodingFence);
-        encs.push(encodings.pseudoEncodingContinuousUpdates);
-        encs.push(encodings.pseudoEncodingDesktopName);
-        encs.push(encodings.pseudoEncodingExtendedClipboard);
-
-        if (this._fb_depth == 24) {
-            encs.push(encodings.pseudoEncodingVMwareCursor);
-            encs.push(encodings.pseudoEncodingCursor);
-        }
-
-        RFB.messages.clientEncodings(this._sock, encs);
     }
 
-    /* RFB protocol initialization states:
-     *   ProtocolVersion
-     *   Security
-     *   Authentication
-     *   SecurityResult
-     *   ClientInitialization - not triggered by server message
-     *   ServerInitialization
-     */
-    _init_msg() {
-        switch (this._rfb_init_state) {
-            case 'ProtocolVersion':
-                return this._negotiate_protocol_version();
-
-            case 'Security':
-                return this._negotiate_security();
-
-            case 'Authentication':
-                return this._negotiate_authentication();
-
-            case 'SecurityResult':
-                return this._handle_security_result();
-
-            case 'SecurityReason':
-                return this._handle_security_reason();
-
-            case 'ClientInitialisation':
-                this._sock.send([this._shared ? 1 : 0]); // ClientInitialisation
-                this._rfb_init_state = 'ServerInitialisation';
-                return true;
-
-            case 'ServerInitialisation':
-                return this._negotiate_server_init();
-
-            default:
-                return this._fail("Unknown init state (state: " +
-                                  this._rfb_init_state + ")");
+    _negotiate_std_vnc_auth() {
+        if (this._rfb_credentials.password === undefined) {
+            this.dispatchEvent(new CustomEvent(
+                "credentialsrequired",
+                { detail: { types: ["password"] } }));
+            return false;
         }
+
+        // TODO(directxman12): make genDES not require an Array
+        let password = RFB.genDES(this._rfb_credentials.password, this._challenge);
+        password = new TextDecoder().decode(new Uint8Array(password)); 
+        this._sock.send({
+            login_request: {
+                password
+            }
+        });
+        return true;
     }
 
     _handle_set_colour_map_msg() {
@@ -1613,7 +1177,7 @@ export default class RFB extends EventTargetMixin {
         return true;
     }
 
-    _normal_msg() {
+    _normal_msg(msg) {
         let msg_type;
         if (this._FBU.rects > 0) {
             msg_type = 0;
@@ -1673,10 +1237,6 @@ export default class RFB extends EventTargetMixin {
 
     _onFlush() {
         this._flushing = false;
-        // Resume processing
-        if (this._sock.rQlen > 0) {
-            this._handle_message();
-        }
     }
 
     _framebufferUpdate() {
@@ -2096,7 +1656,8 @@ export default class RFB extends EventTargetMixin {
 
     static genDES(password, challenge) {
         const passwordChars = password.split('').map(c => c.charCodeAt(0));
-        return (new DES(passwordChars)).encrypt(challenge);
+        const challengeChars = challenge.split('').map(c => c.charCodeAt(0));
+        return (new DES(passwordChars)).encrypt(challengeChars);
     }
 }
 

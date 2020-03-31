@@ -27,6 +27,7 @@ export default class Websock {
     }
 
     send(msg) {
+        if (msg instanceof Object) msg = proto.encodeMessage(msg);
         this._websocket.send(msg);
     }
 
@@ -83,8 +84,12 @@ export default class Websock {
     }
 
     _recv_message(e) {
-        const u8 = new Uint8Array(e.data);
-        const msg = proto.decodeMessage(u8);
-        this._eventHandlers.message(msg);
+        if (e.data instanceof window.Blob) {
+            e.data.arrayBuffer().then(buffer => {
+                const u8 = new Uint8Array(buffer);
+                const msg = proto.decodeMessage(u8);
+                this._eventHandlers.message(msg);
+            });
+        }
     }
 }
