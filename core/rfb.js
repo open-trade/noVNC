@@ -21,16 +21,8 @@ import Cursor from "./util/cursor.js";
 import Websock from "./websock.js";
 import DES from "./des.js";
 import KeyTable from "./input/keysym.js";
-import XtScancode from "./input/xtscancodes.js";
 import { encodings } from "./encodings.js";
 import "./util/polyfill.js";
-
-import RawDecoder from "./decoders/raw.js";
-import CopyRectDecoder from "./decoders/copyrect.js";
-import RREDecoder from "./decoders/rre.js";
-import HextileDecoder from "./decoders/hextile.js";
-import TightDecoder from "./decoders/tight.js";
-import TightPNGDecoder from "./decoders/tightpng.js";
 
 // How many seconds to wait for a disconnect to finish
 const DISCONNECT_TIMEOUT = 3;
@@ -91,8 +83,6 @@ export default class RFB extends EventTargetMixin {
         this._screen_id = 0;
         this._screen_flags = 0;
 
-        this._qemuExtKeyEventSupported = false;
-
         this._clipboardText = null;
         this._clipboardServerCapabilitiesActions = {};
         this._clipboardServerCapabilitiesFormats = {};
@@ -100,25 +90,12 @@ export default class RFB extends EventTargetMixin {
         // Internal objects
         this._sock = null;              // Websock object
         this._display = null;           // Display object
-        this._flushing = false;         // Display flushing state
         this._keyboard = null;          // Keyboard input handler object
         this._mouse = null;             // Mouse input handler object
 
         // Timers
         this._disconnTimer = null;      // disconnection timer
         this._resizeTimeout = null;     // resize rate limiting
-
-        // Decoder states
-        this._decoders = {};
-
-        this._FBU = {
-            rects: 0,
-            x: 0,
-            y: 0,
-            width: 0,
-            height: 0,
-            encoding: null,
-        };
 
         // Mouse state
         this._mouse_buttonMask = 0;
@@ -167,14 +144,6 @@ export default class RFB extends EventTargetMixin {
         // viewers (TigerVNC, RealVNC, Remmina) display an arrow as the
         // initial cursor instead.
         this._cursorImage = RFB.cursors.none;
-
-        // populate decoder array with objects
-        this._decoders[encodings.encodingRaw] = new RawDecoder();
-        this._decoders[encodings.encodingCopyRect] = new CopyRectDecoder();
-        this._decoders[encodings.encodingRRE] = new RREDecoder();
-        this._decoders[encodings.encodingHextile] = new HextileDecoder();
-        this._decoders[encodings.encodingTight] = new TightDecoder();
-        this._decoders[encodings.encodingTightPNG] = new TightPNGDecoder();
 
         // NB: nothing that needs explicit teardown should be done
         // before this point, since this can throw an exception
@@ -398,22 +367,11 @@ export default class RFB extends EventTargetMixin {
             return;
         }
 
-        const scancode = XtScancode[code];
-
-        if (this._qemuExtKeyEventSupported && scancode) {
-            // 0 is NoSymbol
-            keysym = keysym || 0;
-
-            Log.Info("Sending key (" + (down ? "down" : "up") + "): keysym " + keysym + ", scancode " + scancode);
-
-            RFB.messages.QEMUExtendedKeyEvent(this._sock, keysym, down, scancode);
-        } else {
-            if (!keysym) {
-                return;
-            }
-            Log.Info("Sending keysym (" + (down ? "down" : "up") + "): " + keysym);
-            RFB.messages.keyEvent(this._sock, keysym, down ? 1 : 0);
+        if (!keysym) {
+            return;
         }
+        Log.Info("Sending keysym (" + (down ? "down" : "up") + "): " + keysym);
+        RFB.messages.keyEvent(this._sock, keysym, down ? 1 : 0);
     }
 
     focus() {
@@ -754,18 +712,10 @@ export default class RFB extends EventTargetMixin {
                 Log.Error("Got data while disconnected");
                 break;
             case 'connected':
-                while (true) {
-                    if (this._flushing) {
-                        break;
-                    }
-                    if (!this._normal_msg(msg)) {
-                        break;
-                    }
-                }
+                this._normal_msg(msg);
                 break;
             default:
                 this._init_msg(msg);
-                break;
         }
     }
 
@@ -838,37 +788,6 @@ export default class RFB extends EventTargetMixin {
 
     // Message Handlers
 
-    _handle_security_reason() {
-        if (this._sock.rQwait("reason length", 4)) {
-            return false;
-        }
-        const strlen = this._sock.rQshift32();
-        let reason = "";
-
-        if (strlen > 0) {
-            if (this._sock.rQwait("reason", strlen, 4)) { return false; }
-            reason = this._sock.rQshiftStr(strlen);
-        }
-
-        if (reason !== "") {
-            this.dispatchEvent(new CustomEvent(
-                "securityfailure",
-                { detail: { status: this._security_status,
-                            reason: reason } }));
-
-            return this._fail("Security negotiation failed on " +
-                              this._security_context +
-                              " (reason: " + reason + ")");
-        } else {
-            this.dispatchEvent(new CustomEvent(
-                "securityfailure",
-                { detail: { status: this._security_status } }));
-
-            return this._fail("Security negotiation failed on " +
-                              this._security_context);
-        }
-    }
-
     _negotiate_server_init(server_info) {
         this._server_info = server_info;
         const { username, displays } = server_info;
@@ -920,19 +839,13 @@ export default class RFB extends EventTargetMixin {
 
         // TODO(directxman12): make genDES not require an Array
         let password = RFB.genDES(this._rfb_credentials.password, this._challenge);
-        password = new TextDecoder().decode(new Uint8Array(password)); 
+        password = new TextDecoder().decode(new Uint8Array(password));
         this._sock.send({
             login_request: {
                 password
             }
         });
         return true;
-    }
-
-    _handle_set_colour_map_msg() {
-        Log.Debug("SetColorMapEntries");
-
-        return this._fail("Unexpected SetColorMapEntries message");
     }
 
     _handle_server_cut_text() {
@@ -1104,272 +1017,40 @@ export default class RFB extends EventTargetMixin {
     }
 
     _normal_msg(msg) {
-        let msg_type;
-        if (this._FBU.rects > 0) {
-            msg_type = 0;
-        } else {
-            msg_type = this._sock.rQshift8();
-        }
-
-        let first, ret;
-        switch (msg_type) {
-            case 0:  // FramebufferUpdate
-                ret = this._framebufferUpdate();
-                if (ret && !this._enabledContinuousUpdates) {
-                    RFB.messages.fbUpdateRequest(this._sock, true, 0, 0,
-                                                 this._fb_width, this._fb_height);
-                }
-                return ret;
-
-            case 1:  // SetColorMapEntries
-                return this._handle_set_colour_map_msg();
-
-            case 2:  // Bell
-                Log.Debug("Bell");
-                this.dispatchEvent(new CustomEvent(
-                    "bell",
-                    { detail: {} }));
-                return true;
-
-            case 3:  // ServerCutText
-                return this._handle_server_cut_text();
-
-            case 150: // EndOfContinuousUpdates
-                first = !this._supportsContinuousUpdates;
-                this._supportsContinuousUpdates = true;
-                this._enabledContinuousUpdates = false;
-                if (first) {
-                    this._enabledContinuousUpdates = true;
-                    this._updateContinuousUpdates();
-                    Log.Info("Enabling continuous updates.");
-                } else {
-                    // FIXME: We need to send a framebufferupdaterequest here
-                    // if we add support for turning off continuous updates
-                }
-                return true;
-
-            case 248: // ServerFence
-                return this._handle_server_fence_msg();
-
-            default:
-                this._fail("Unexpected server message (type " + msg_type + ")");
-                Log.Debug("sock.rQslice(0, 30): " + this._sock.rQslice(0, 30));
-                return true;
+        if (msg.bell) {
+            Log.Debug("Bell");
+            this.dispatchEvent(new CustomEvent(
+                "bell",
+                { detail: {} }));
+        } else if (msg.video_frame) {
+            this._framebufferUpdate(msg.video_frame);
+        } else if (msg.cursor) {
+            this._handleCursor(msg.cursor);
+        } else if (msg.clipboard) {
+            this._handle_server_cut_text();
         }
     }
 
     _onFlush() {
-        this._flushing = false;
     }
 
-    _framebufferUpdate() {
-        if (this._FBU.rects === 0) {
-            if (this._sock.rQwait("FBU header", 3, 1)) { return false; }
-            this._sock.rQskipBytes(1);  // Padding
-            this._FBU.rects = this._sock.rQshift16();
-
-            // Make sure the previous frame is fully rendered first
-            // to avoid building up an excessive queue
-            if (this._display.pending()) {
-                this._flushing = true;
-                this._display.flush();
-                return false;
-            }
-        }
-
-        while (this._FBU.rects > 0) {
-            if (this._FBU.encoding === null) {
-                if (this._sock.rQwait("rect header", 12)) { return false; }
-                /* New FramebufferUpdate */
-
-                const hdr = this._sock.rQshiftBytes(12);
-                this._FBU.x        = (hdr[0] << 8) + hdr[1];
-                this._FBU.y        = (hdr[2] << 8) + hdr[3];
-                this._FBU.width    = (hdr[4] << 8) + hdr[5];
-                this._FBU.height   = (hdr[6] << 8) + hdr[7];
-                this._FBU.encoding = parseInt((hdr[8] << 24) + (hdr[9] << 16) +
-                                              (hdr[10] << 8) + hdr[11], 10);
-            }
-
-            if (!this._handleRect()) {
-                return false;
-            }
-
-            this._FBU.rects--;
-            this._FBU.encoding = null;
-        }
-
+    _framebufferUpdate(video_frame) {
+        const { rgba } = video_frame;
+        if (!rgba) return;
+        this._display.blitRgbxImage(0, 0, this._fb_width, this._fb_height, rgba.data, 0);
         this._display.flip();
-
-        return true;  // We finished this FBU
     }
 
-    _handleRect() {
-        switch (this._FBU.encoding) {
-            case encodings.pseudoEncodingLastRect:
-                this._FBU.rects = 1; // Will be decreased when we return
-                return true;
+    _handleCursor(cursor) {
+        const hotx = cursor.x;  // hotspot-x
+        const hoty = cursor.y;  // hotspot-y
+        const w = cursor.width;
+        const h = cursor.height;
 
-            case encodings.pseudoEncodingVMwareCursor:
-                return this._handleVMwareCursor();
-
-            case encodings.pseudoEncodingCursor:
-                return this._handleCursor();
-
-            case encodings.pseudoEncodingQEMUExtendedKeyEvent:
-                // Old Safari doesn't support creating keyboard events
-                try {
-                    const keyboardEvent = document.createEvent("keyboardEvent");
-                    if (keyboardEvent.code !== undefined) {
-                        this._qemuExtKeyEventSupported = true;
-                    }
-                } catch (err) {
-                    // Do nothing
-                }
-                return true;
-
-            case encodings.pseudoEncodingDesktopSize:
-                this._resize(this._FBU.width, this._FBU.height);
-                return true;
-
-            default:
-                return this._handleDataRect();
-        }
-    }
-
-    _handleVMwareCursor() {
-        const hotx = this._FBU.x;  // hotspot-x
-        const hoty = this._FBU.y;  // hotspot-y
-        const w = this._FBU.width;
-        const h = this._FBU.height;
-        if (this._sock.rQwait("VMware cursor encoding", 1)) {
-            return false;
-        }
-
-        const cursor_type = this._sock.rQshift8();
-
-        this._sock.rQshift8(); //Padding
-
-        let rgba;
-        const bytesPerPixel = 4;
-
-        //Classic cursor
-        if (cursor_type == 0) {
-            //Used to filter away unimportant bits.
-            //OR is used for correct conversion in js.
-            const PIXEL_MASK = 0xffffff00 | 0;
-            rgba = new Array(w * h * bytesPerPixel);
-
-            if (this._sock.rQwait("VMware cursor classic encoding",
-                                  (w * h * bytesPerPixel) * 2, 2)) {
-                return false;
-            }
-
-            let and_mask = new Array(w * h);
-            for (let pixel = 0; pixel < (w * h); pixel++) {
-                and_mask[pixel] = this._sock.rQshift32();
-            }
-
-            let xor_mask = new Array(w * h);
-            for (let pixel = 0; pixel < (w * h); pixel++) {
-                xor_mask[pixel] = this._sock.rQshift32();
-            }
-
-            for (let pixel = 0; pixel < (w * h); pixel++) {
-                if (and_mask[pixel] == 0) {
-                    //Fully opaque pixel
-                    let bgr = xor_mask[pixel];
-                    let r   = bgr >> 8  & 0xff;
-                    let g   = bgr >> 16 & 0xff;
-                    let b   = bgr >> 24 & 0xff;
-
-                    rgba[(pixel * bytesPerPixel)     ] = r;    //r
-                    rgba[(pixel * bytesPerPixel) + 1 ] = g;    //g
-                    rgba[(pixel * bytesPerPixel) + 2 ] = b;    //b
-                    rgba[(pixel * bytesPerPixel) + 3 ] = 0xff; //a
-
-                } else if ((and_mask[pixel] & PIXEL_MASK) ==
-                           PIXEL_MASK) {
-                    //Only screen value matters, no mouse colouring
-                    if (xor_mask[pixel] == 0) {
-                        //Transparent pixel
-                        rgba[(pixel * bytesPerPixel)     ] = 0x00;
-                        rgba[(pixel * bytesPerPixel) + 1 ] = 0x00;
-                        rgba[(pixel * bytesPerPixel) + 2 ] = 0x00;
-                        rgba[(pixel * bytesPerPixel) + 3 ] = 0x00;
-
-                    } else if ((xor_mask[pixel] & PIXEL_MASK) ==
-                               PIXEL_MASK) {
-                        //Inverted pixel, not supported in browsers.
-                        //Fully opaque instead.
-                        rgba[(pixel * bytesPerPixel)     ] = 0x00;
-                        rgba[(pixel * bytesPerPixel) + 1 ] = 0x00;
-                        rgba[(pixel * bytesPerPixel) + 2 ] = 0x00;
-                        rgba[(pixel * bytesPerPixel) + 3 ] = 0xff;
-
-                    } else {
-                        //Unhandled xor_mask
-                        rgba[(pixel * bytesPerPixel)     ] = 0x00;
-                        rgba[(pixel * bytesPerPixel) + 1 ] = 0x00;
-                        rgba[(pixel * bytesPerPixel) + 2 ] = 0x00;
-                        rgba[(pixel * bytesPerPixel) + 3 ] = 0xff;
-                    }
-
-                } else {
-                    //Unhandled and_mask
-                    rgba[(pixel * bytesPerPixel)     ] = 0x00;
-                    rgba[(pixel * bytesPerPixel) + 1 ] = 0x00;
-                    rgba[(pixel * bytesPerPixel) + 2 ] = 0x00;
-                    rgba[(pixel * bytesPerPixel) + 3 ] = 0xff;
-                }
-            }
-
-        //Alpha cursor.
-        } else if (cursor_type == 1) {
-            if (this._sock.rQwait("VMware cursor alpha encoding",
-                                  (w * h * 4), 2)) {
-                return false;
-            }
-
-            rgba = new Array(w * h * bytesPerPixel);
-
-            for (let pixel = 0; pixel < (w * h); pixel++) {
-                let data = this._sock.rQshift32();
-
-                rgba[(pixel * 4)     ] = data >> 24 & 0xff; //r
-                rgba[(pixel * 4) + 1 ] = data >> 16 & 0xff; //g
-                rgba[(pixel * 4) + 2 ] = data >> 8 & 0xff;  //b
-                rgba[(pixel * 4) + 3 ] = data & 0xff;       //a
-            }
-
-        } else {
-            Log.Warn("The given cursor type is not supported: "
-                      + cursor_type + " given.");
-            return false;
-        }
-
-        this._updateCursor(rgba, hotx, hoty, w, h);
-
-        return true;
-    }
-
-    _handleCursor() {
-        const hotx = this._FBU.x;  // hotspot-x
-        const hoty = this._FBU.y;  // hotspot-y
-        const w = this._FBU.width;
-        const h = this._FBU.height;
-
-        const pixelslength = w * h * 4;
-        const masklength = Math.ceil(w / 8) * h;
-
-        let bytes = pixelslength + masklength;
-        if (this._sock.rQwait("cursor encoding", bytes)) {
-            return false;
-        }
-
+        // const pixelslength = w * h * 4;
+        // const masklength = Math.ceil(w / 8) * h;
         // Decode from BGRX pixels + bit mask to RGBA
-        const pixels = this._sock.rQshiftBytes(pixelslength);
-        const mask = this._sock.rQshiftBytes(masklength);
+        const { pixels, mask } = cursor;
         let rgba = new Uint8Array(w * h * 4);
 
         let pix_idx = 0;
@@ -1386,27 +1067,6 @@ export default class RFB extends EventTargetMixin {
         }
 
         this._updateCursor(rgba, hotx, hoty, w, h);
-
-        return true;
-    }
-
-    _handleDataRect() {
-        let decoder = this._decoders[this._FBU.encoding];
-        if (!decoder) {
-            this._fail("Unsupported encoding (encoding: " +
-                       this._FBU.encoding + ")");
-            return false;
-        }
-
-        try {
-            return decoder.decodeRect(this._FBU.x, this._FBU.y,
-                                      this._FBU.width, this._FBU.height,
-                                      this._sock, this._display,
-                                      this._fb_depth);
-        } catch (err) {
-            this._fail("Error decoding rect: " + err);
-            return false;
-        }
     }
 
     _resize(width, height) {
@@ -1490,57 +1150,10 @@ RFB.messages = {
         sock.flush();
     },
 
-    QEMUExtendedKeyEvent(sock, keysym, down, keycode) {
-        function getRFBkeycode(xt_scancode) {
-            const upperByte = (keycode >> 8);
-            const lowerByte = (keycode & 0x00ff);
-            if (upperByte === 0xe0 && lowerByte < 0x7f) {
-                return lowerByte | 0x80;
-            }
-            return xt_scancode;
-        }
-
-        const buff = sock._sQ;
-        const offset = sock._sQlen;
-
-        buff[offset] = 255; // msg-type
-        buff[offset + 1] = 0; // sub msg-type
-
-        buff[offset + 2] = (down >> 8);
-        buff[offset + 3] = down;
-
-        buff[offset + 4] = (keysym >> 24);
-        buff[offset + 5] = (keysym >> 16);
-        buff[offset + 6] = (keysym >> 8);
-        buff[offset + 7] = keysym;
-
-        const RFBkeycode = getRFBkeycode(keycode);
-
-        buff[offset + 8] = (RFBkeycode >> 24);
-        buff[offset + 9] = (RFBkeycode >> 16);
-        buff[offset + 10] = (RFBkeycode >> 8);
-        buff[offset + 11] = RFBkeycode;
-
-        sock._sQlen += 12;
-        sock.flush();
-    },
-
     pointerEvent(sock, x, y, mask) {
-        const buff = sock._sQ;
-        const offset = sock._sQlen;
-
-        buff[offset] = 5; // msg-type
-
-        buff[offset + 1] = mask;
-
-        buff[offset + 2] = x >> 8;
-        buff[offset + 3] = x;
-
-        buff[offset + 4] = y >> 8;
-        buff[offset + 5] = y;
-
-        sock._sQlen += 6;
-        sock.flush();
+        sock.send({
+            pointer_event: {x, y, mask}
+        });
     },
 
     // Used to build Notify and Request data.

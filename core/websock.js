@@ -85,7 +85,7 @@ export default class Websock {
 
     _recv_message(e) {
         if (e.data instanceof window.Blob) {
-            e.data.arrayBuffer().then(buffer => {
+            e.data.arrayBuffer().then((buffer) => {
                 const u8 = new Uint8Array(buffer);
                 const msg = proto.decodeMessage(u8);
                 this._eventHandlers.message(msg);
