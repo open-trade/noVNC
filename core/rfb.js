@@ -21,7 +21,6 @@ import Cursor from "./util/cursor.js";
 import Websock from "./websock.js";
 import DES from "./des.js";
 import KeyTable from "./input/keysym.js";
-import { encodings } from "./encodings.js";
 import "./util/polyfill.js";
 
 // How many seconds to wait for a disconnect to finish
