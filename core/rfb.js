@@ -1024,7 +1024,7 @@ export default class RFB extends EventTargetMixin {
         } else if (msg.video_frame) {
             this._framebufferUpdate(msg.video_frame);
         } else if (msg.cursor) {
-            this._handleCursor(msg.cursor);
+            this._handleCursor(msg.cursor_data);
         } else if (msg.clipboard) {
             this._handle_server_cut_text();
         }
@@ -1041,15 +1041,13 @@ export default class RFB extends EventTargetMixin {
     }
 
     _handleCursor(cursor) {
-        const hotx = cursor.x;  // hotspot-x
-        const hoty = cursor.y;  // hotspot-y
+        const { hotx, hoty, colors, mask } = cursor;
         const w = cursor.width;
         const h = cursor.height;
 
         // const pixelslength = w * h * 4;
         // const masklength = Math.ceil(w / 8) * h;
         // Decode from BGRX pixels + bit mask to RGBA
-        const { pixels, mask } = cursor;
         let rgba = new Uint8Array(w * h * 4);
 
         let pix_idx = 0;
@@ -1057,9 +1055,9 @@ export default class RFB extends EventTargetMixin {
             for (let x = 0; x < w; x++) {
                 let mask_idx = y * Math.ceil(w / 8) + Math.floor(x / 8);
                 let alpha = (mask[mask_idx] << (x % 8)) & 0x80 ? 255 : 0;
-                rgba[pix_idx    ] = pixels[pix_idx + 2];
-                rgba[pix_idx + 1] = pixels[pix_idx + 1];
-                rgba[pix_idx + 2] = pixels[pix_idx];
+                rgba[pix_idx    ] = colors[pix_idx + 2];
+                rgba[pix_idx + 1] = colors[pix_idx + 1];
+                rgba[pix_idx + 2] = colors[pix_idx];
                 rgba[pix_idx + 3] = alpha;
                 pix_idx += 4;
             }
