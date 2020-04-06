@@ -1034,9 +1034,9 @@ export default class RFB extends EventTargetMixin {
     }
 
     _framebufferUpdate(video_frame) {
-        const { rgba } = video_frame;
-        if (!rgba) return;
-        this._display.blitRgbxImage(0, 0, this._fb_width, this._fb_height, rgba.data, 0);
+        const { rgb } = video_frame;
+        if (!rgb) return;
+        this._display.blitRgbImage(0, 0, this._fb_width, this._fb_height, rgb.data, 0);
         this._display.flip();
     }
 
