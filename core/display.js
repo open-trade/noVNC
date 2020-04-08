@@ -12,7 +12,7 @@ import { supportsImageMetadata } from './util/browser.js';
 import YUVCanvas from 'yuv-canvas';
 
 export default class Display {
-    constructor(target, yuv) {
+    constructor(target, useYUV, useBackBuffer) {
         this._drawCtx = null;
         this._c_forceCanvas = false;
 
@@ -42,32 +42,41 @@ export default class Display {
             throw new Error('target must be a DOM element');
         }
 
-        if (!this._target.getContext) {
-            throw new Error("no getContext method");
+        if (useYUV) {
+            this._yuv = YUVCanvas.attach(target);
+            useBackBuffer = false;
+        } else {
+            if (!this._target.getContext) {
+                throw new Error("no getContext method");
+            }
+            this._targetCtx = this._target.getContext('2d');
         }
-
-        if (yuv) this._yuv = YUVCanvas.attach(target);
-        this._targetCtx = this._target.getContext('2d');
 
         // the visible canvas viewport (i.e. what actually gets seen)
         this._viewportLoc = { 'x': 0, 'y': 0, 'w': this._target.width, 'h': this._target.height };
+        this._damageBounds = {};
 
-        // The hidden canvas, where we do the actual rendering
-        this._backbuffer = document.createElement('canvas');
-        this._drawCtx = this._backbuffer.getContext('2d');
+        if (useBackBuffer) {
+            // The hidden canvas, where we do the actual rendering
+            this._backbuffer = document.createElement('canvas');
+            this._drawCtx = this._backbuffer.getContext('2d');
 
-        this._damageBounds = { left: 0, top: 0,
-                               right: this._backbuffer.width,
-                               bottom: this._backbuffer.height };
+            this._damageBounds = {
+                left: 0,
+                top: 0,
+                right: this._backbuffer.width,
+                bottom: this._backbuffer.height,
+            };
 
-        Log.Debug("User Agent: " + navigator.userAgent);
+            Log.Debug("User Agent: " + navigator.userAgent);
 
-        // Check canvas features
-        if (!('createImageData' in this._drawCtx)) {
-            throw new Error("Canvas does not support createImageData");
+            // Check canvas features
+            if (!('createImageData' in this._drawCtx)) {
+                throw new Error("Canvas does not support createImageData");
+            }
+
+            this._tile16x16 = this._drawCtx.createImageData(16, 16);
         }
-
-        this._tile16x16 = this._drawCtx.createImageData(16, 16);
         Log.Debug("<< Display.constructor");
 
         // ===== PROPERTIES =====
@@ -210,7 +219,7 @@ export default class Display {
         this._fb_height = height;
 
         const canvas = this._backbuffer;
-        if (!this._yuv && (canvas.width !== width || canvas.height !== height)) {
+        if (canvas && (canvas.width !== width || canvas.height !== height)) {
 
             // We have to save the canvas data since changing the size will clear it
             let saveImg = null;
@@ -251,6 +260,11 @@ export default class Display {
         if ((y + h) > this._damageBounds.bottom) {
             this._damageBounds.bottom = y + h;
         }
+    }
+
+    drawRGBA(rgba) {
+        const img = this._createImageData(this._fb_width, this._fb_height, rgba);
+        this._targetCtx.putImageData(img, 0, 0);
     }
 
     drawYUV(yuv) {
@@ -593,8 +607,7 @@ export default class Display {
         this._damage(x, y, img.width, img.height);
     }
 
-    _rgbxImageData(x, y, width, height, arr, offset) {
-        // NB(directxman12): arr must be an Type Array view
+    _createImageData(width, height, arr) {
         let img;
         if (supportsImageMetadata) {
             img = new ImageData(new Uint8ClampedArray(arr.buffer, arr.byteOffset, width * height * 4), width, height);
@@ -602,6 +615,12 @@ export default class Display {
             img = this._drawCtx.createImageData(width, height);
             img.data.set(new Uint8ClampedArray(arr.buffer, arr.byteOffset, width * height * 4));
         }
+        return img;
+    }
+
+    _rgbxImageData(x, y, width, height, arr, offset) {
+        // NB(directxman12): arr must be an Type Array view
+        const img = this._createImageData(width, height, arr);
         this._drawCtx.putImageData(img, x, y);
         this._damage(x, y, img.width, img.height);
     }

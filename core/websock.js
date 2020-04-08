@@ -25,6 +25,7 @@ export default class Websock {
             error: () => {}
         };
         this._next_yuv = null;
+        this._next_rgb = null;
     }
 
     send(msg) {
@@ -100,10 +101,19 @@ export default class Websock {
                     this._eventHandlers.message({ video_frame: { yuv } });
                     this._next_yuv = null;
                 }
+            } else if (this._next_rgb) {
+                this._eventHandlers.message({ video_frame: { rgb: bytes }});
+                this._next_rgb = null;
             } else {
                 const msg = proto.decodeMessage(bytes);
-                if (msg.video_frame && msg.video_frame.yuv) {
-                    this._next_yuv = { format: msg.video_frame.yuv };
+                let vf = msg.video_frame;
+                if (vf) {
+                    const { yuv, rgb } = vf;
+                    if (yuv) {
+                        this._next_yuv = { format: yuv };
+                    } else if (rgb) {
+                        this._next_rgb = { format: rgb };
+                    }
                     return;
                 } else {
                     this._eventHandlers.message(msg);

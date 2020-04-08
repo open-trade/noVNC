@@ -13,8 +13,6 @@ import { encodeUTF8, decodeUTF8 } from './util/strings.js';
 import { dragThreshold } from './util/browser.js';
 import EventTargetMixin from './util/eventtarget.js';
 import Display from "./display.js";
-import Inflator from "./inflator.js";
-import Deflator from "./deflator.js";
 import Keyboard from "./input/keyboard.js";
 import Mouse from "./input/mouse.js";
 import Cursor from "./util/cursor.js";
@@ -1051,8 +1049,7 @@ export default class RFB extends EventTargetMixin {
         // e.g. x=new Image(); x.src=dataurl, ctx.drawImage(x).
         // both png/jpg used.
         // and it use wasm to decode video, BTW zoom use duilib as GUI framework on Windows
-        this._display.blitRgbImage(0, 0, this._fb_width, this._fb_height, rgb.data, 0);
-        this._display.flip();
+        this._display.drawRGBA(rgb);
     }
 
     _handleCursor(cursor) {
