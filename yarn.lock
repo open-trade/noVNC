@@ -8076,12 +8076,12 @@ yeast@0.1.2:
   resolved "https://registry.yarnpkg.com/yeast/-/yeast-0.1.2.tgz#008e06d8094320c372dbc2f8ed76a0ca6c8ac419"
   integrity sha1-AI4G2AlDIMNy28L47XagymyKxBk=
 
-yuv-buffer@^1.0.0:
-  version "1.0.0"
-  resolved "https://registry.yarnpkg.com/yuv-buffer/-/yuv-buffer-1.0.0.tgz#09a454858d74df2bc31cd588edd70ffcb86bfc9a"
-  integrity sha1-CaRUhY103yvDHNWI7dcP/Lhr/Jo=
-
 yuv-canvas@^1.2.6:
   version "1.2.6"
   resolved "https://registry.yarnpkg.com/yuv-canvas/-/yuv-canvas-1.2.6.tgz#246452196fca9e581f09abed9b90c94aff6014e2"
   integrity sha512-luNSFyGOPIJP4L8LUSgaBwWoAdmm45lCY44jhDgyREHcjnAtnR5Poj0C821UJ2CPD5GVIlfHOeFO2PDRCl2w/A==
+
+zstd-codec@^0.1.2:
+  version "0.1.2"
+  resolved "https://registry.yarnpkg.com/zstd-codec/-/zstd-codec-0.1.2.tgz#6a13b7e666d9066d5236cbab760862a44f2660a0"
+  integrity sha512-t1gdk33h1wT7YcBPebyGWGJTWodKsJVfDeVN0q2x/htPGLEX3BAuBvOFsU4W3BplbmTXwvH8c/TUZ/DPTXOFfg==

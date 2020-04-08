@@ -88,7 +88,8 @@
     "webpack-dev-server": "^3.1.1"
   },
   "dependencies": {
-    "yuv-canvas": "^1.2.6"
+    "yuv-canvas": "^1.2.6",
+    "zstd-codec": "^0.1.2"
   },
   "keywords": [
     "vnc",

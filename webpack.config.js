@@ -12,6 +12,9 @@ console.log('SRC_DIR', SRC_DIR);
 
 module.exports = (env = {}) => {
   return {
+    node: {
+     fs: "empty"
+    },
     entry: {
       index: [SRC_DIR + '/ui.js']
     },

@@ -14,6 +14,11 @@
 
 import * as Log from './util/logging.js';
 import * as proto from '../message.js';
+import { ZstdCodec } from 'zstd-codec';
+let simple_zstd;
+ZstdCodec.run((zstd) => {
+    simple_zstd = new zstd.Simple();
+});
 
 export default class Websock {
     constructor() {
@@ -88,20 +93,27 @@ export default class Websock {
 
     _recv_message(e) {
         if (e.data instanceof window.ArrayBuffer) {
-            const bytes = new Uint8Array(e.data);
+            let bytes = new Uint8Array(e.data);
             if (this._next_yuv) {
                 const yuv = this._next_yuv;
+                const { compress, stride } = yuv.format;
+                if (compress) {
+                    bytes = simple_zstd.decompress(bytes);
+                }
                 if (!yuv.y) {
-                    yuv.y = { bytes, stride: yuv.format.stride };
+                    yuv.y = { bytes, stride: stride };
                 } else if (!yuv.u) {
-                    yuv.u = { bytes, stride: yuv.format.stride >> 1 };
+                    yuv.u = { bytes, stride: stride >> 1 };
                 } else {
-                    yuv.v = { bytes, stride: yuv.format.stride >> 1 };
+                    yuv.v = { bytes, stride: stride >> 1 };
                     delete yuv.format.stride;
                     this._eventHandlers.message({ video_frame: { yuv } });
                     this._next_yuv = null;
                 }
             } else if (this._next_rgb) {
+                if (this._next_rgb.format.compress) {
+                    bytes = simple_zstd.decompress(bytes);
+                }
                 this._eventHandlers.message({ video_frame: { rgb: bytes }});
                 this._next_rgb = null;
             } else {
