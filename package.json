@@ -51,6 +51,7 @@
     "@babel/plugin-transform-modules-systemjs": "*",
     "@babel/plugin-transform-modules-umd": "*",
     "@babel/preset-env": "*",
+    "babel-loader": "^8.1.0",
     "babel-plugin-import-redirect": "*",
     "babelify": "*",
     "browserify": "*",
@@ -86,7 +87,9 @@
     "webpack-cli": "^3.1.0",
     "webpack-dev-server": "^3.1.1"
   },
-  "dependencies": {},
+  "dependencies": {
+    "yuv-canvas": "^1.2.6"
+  },
   "keywords": [
     "vnc",
     "rfb",

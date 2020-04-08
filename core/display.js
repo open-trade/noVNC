@@ -9,9 +9,10 @@
 import * as Log from './util/logging.js';
 import Base64 from "./base64.js";
 import { supportsImageMetadata } from './util/browser.js';
+import YUVCanvas from 'yuv-canvas';
 
 export default class Display {
-    constructor(target) {
+    constructor(target, yuv) {
         this._drawCtx = null;
         this._c_forceCanvas = false;
 
@@ -45,6 +46,7 @@ export default class Display {
             throw new Error("no getContext method");
         }
 
+        if (yuv) this._yuv = YUVCanvas.attach(target);
         this._targetCtx = this._target.getContext('2d');
 
         // the visible canvas viewport (i.e. what actually gets seen)
@@ -208,7 +210,7 @@ export default class Display {
         this._fb_height = height;
 
         const canvas = this._backbuffer;
-        if (canvas.width !== width || canvas.height !== height) {
+        if (!this._yuv && (canvas.width !== width || canvas.height !== height)) {
 
             // We have to save the canvas data since changing the size will clear it
             let saveImg = null;
@@ -251,6 +253,25 @@ export default class Display {
         }
     }
 
+    drawYUV(yuv) {
+        // https://github.com/brion/ogv.js/blob/70661a9f8cf103428c025de9796205ea0c31b241/src/c/ogv-decoder-video-vpx.c
+        const height = (this._fb_height + 1) & ~1;
+        const width = yuv.y.stride;
+        yuv.format = {
+            displayWidth: this._fb_width,
+            displayHeight: this._fb_height,
+            chromaWidth: width >> 1,
+            chromaHeight: height >> 1,
+            cropLeft: 0,
+            cropTop: 0,
+            cropWidth: this._fb_width,
+            cropHeight: this._fb_height,
+            width,
+            height: height,
+        };
+        this._yuv.drawFrame(yuv);
+    }
+
     // Update the visible canvas with the contents of the
     // rendering canvas
     flip(from_queue) {
@@ -284,6 +305,8 @@ export default class Display {
             if ((vy + h) > this._viewportLoc.h) {
                 h = this._viewportLoc.h - vy;
             }
+
+            if (this._yuv) return;
 
             if ((w > 0) && (h > 0)) {
                 // FIXME: We may need to disable image smoothing here

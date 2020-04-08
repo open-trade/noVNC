@@ -147,7 +147,7 @@ export default class RFB extends EventTargetMixin {
         // NB: nothing that needs explicit teardown should be done
         // before this point, since this can throw an exception
         try {
-            this._display = new Display(this._canvas);
+            this._display = new Display(this._canvas, true);
         } catch (exc) {
             Log.Error("Display exception: " + exc);
             throw exc;
@@ -1016,7 +1016,9 @@ export default class RFB extends EventTargetMixin {
     }
 
     _normal_msg(msg) {
-        if (msg.bell) {
+        if (msg instanceof Uint8Array) {
+            this._handle_yuv(msg);
+        } if (msg.bell) {
             Log.Debug("Bell");
             this.dispatchEvent(new CustomEvent(
                 "bell",
@@ -1033,54 +1035,22 @@ export default class RFB extends EventTargetMixin {
     _onFlush() {
     }
 
+    _handle_yuv(yuv) {
+        this._display.drawYUV(yuv);
+    }
+
     _framebufferUpdate(video_frame) {
-        const { rgb } = video_frame;
-        if (!rgb) return;
+        const { rgb, yuv } = video_frame;
+        if (rgb) this._handle_rgb(rgb);
+        if (yuv) this._handle_yuv(yuv);
+    }
+
+    _handle_rgb(rgb) {
         // we can also try out https://github.com/brion/yuv-canvas to display yuv directly
-        // zoom used below to render video on web, it use wasm to decode video, BTW zoom use duilib as GUI framework on Windows
-        /*
-                    key: "handleBinaryData",
-                    value: function (e) {
-                        var t = e.subarray(0, 24),
-                            n = t[0],
-                            o = t[1];
-                        if ("4" == n ? x = Object(f.a)(e.subarray(24)) : "3" == n && (S = Object(f.a)(e.subarray(24))), "5" == n) {
-                            k.clearRect(0, 0, 1920, 1080), T = {
-                                x: parseInt(t[8]) + 256 * parseInt(t[9]) + 256 * parseInt(t[10]) * 256 + 256 * parseInt(t[11]) * 256 * 256,
-                                y: parseInt(t[12]) + 256 * parseInt(t[13]) + 256 * parseInt(t[14]) * 256 + 256 * parseInt(t[15]) * 256 * 256,
-                                width: parseInt(t[16]) + 256 * parseInt(t[17]) + 256 * parseInt(t[18]) * 256 + 256 * parseInt(t[19]) * 256 * 256,
-                                height: parseInt(t[20]) + 256 * parseInt(t[21]) + 256 * parseInt(t[22]) * 256 + 256 * parseInt(t[23]) * 256 * 256
-                            };
-                            try {
-                                this.drawImage(T, x, "png")
-                            } catch (b) {
-                                printDebug("drawImage error")
-                            }
-                        }
-                    }
-                    key: "drawImage",
-                    value: function (e, t) {
-                        var n = new Image,
-                            o = this.props.meetingUI.screenSize,
-                            r = o.width,
-                            a = o.height,
-                            i = o.logicWidth,
-                            s = o.logicHeight,
-                            c = e.x * (r / i),
-                            l = e.y * (a / s);
-                        n.onload = function () {
-                            k.drawImage(n, c, l), n = null
-                        }, n.src = "data:image/png;base64,".concat(window.btoa(t))
-                    }
-                }, {
-                    key: "drawImage2",
-                    value: function (e, t) {
-                        var n = new Image;
-                        n.onload = function () {
-                            I.drawImage(n, e.x, e.y), n = null
-                        }, n.src = "data:image/jpeg;base64,".concat(window.btoa(t))
-                    }
-        */
+        // zoom used drawImage() to render video on web,
+        // e.g. x=new Image(); x.src=dataurl, ctx.drawImage(x).
+        // both png/jpg used.
+        // and it use wasm to decode video, BTW zoom use duilib as GUI framework on Windows
         this._display.blitRgbImage(0, 0, this._fb_width, this._fb_height, rgb.data, 0);
         this._display.flip();
     }

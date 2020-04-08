@@ -24,6 +24,7 @@ export default class Websock {
             close: () => {},
             error: () => {}
         };
+        this._next_yuv = null;
     }
 
     send(msg) {
@@ -50,6 +51,7 @@ export default class Websock {
         this._websocket = new WebSocket(uri, protocols);
 
         this._websocket.onmessage = this._recv_message.bind(this);
+        this._websocket.binaryType = 'arraybuffer';
         this._websocket.onopen = () => {
             Log.Debug('>> WebSock.onopen');
             if (this._websocket.protocol) {
@@ -84,12 +86,29 @@ export default class Websock {
     }
 
     _recv_message(e) {
-        if (e.data instanceof window.Blob) {
-            e.data.arrayBuffer().then((buffer) => {
-                const u8 = new Uint8Array(buffer);
-                const msg = proto.decodeMessage(u8);
-                this._eventHandlers.message(msg);
-            });
+        if (e.data instanceof window.ArrayBuffer) {
+            const bytes = new Uint8Array(e.data);
+            if (this._next_yuv) {
+                const yuv = this._next_yuv;
+                if (!yuv.y) {
+                    yuv.y = { bytes, stride: yuv.format.stride };
+                } else if (!yuv.u) {
+                    yuv.u = { bytes, stride: yuv.format.stride >> 1 };
+                } else {
+                    yuv.v = { bytes, stride: yuv.format.stride >> 1 };
+                    delete yuv.format.stride;
+                    this._eventHandlers.message({ video_frame: { yuv } });
+                    this._next_yuv = null;
+                }
+            } else {
+                const msg = proto.decodeMessage(bytes);
+                if (msg.video_frame && msg.video_frame.yuv) {
+                    this._next_yuv = { format: msg.video_frame.yuv };
+                    return;
+                } else {
+                    this._eventHandlers.message(msg);
+                }
+            }
         }
     }
 }
