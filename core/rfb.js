@@ -20,6 +20,11 @@ import Websock from "./websock.js";
 import DES from "./des.js";
 import KeyTable from "./input/keysym.js";
 import "./util/polyfill.js";
+import { ZstdCodec } from 'zstd-codec';
+
+ZstdCodec.run((zstd) => {
+    window.simple_zstd = new zstd.Simple();
+});
 
 // How many seconds to wait for a disconnect to finish
 const DISCONNECT_TIMEOUT = 3;
@@ -1023,7 +1028,7 @@ export default class RFB extends EventTargetMixin {
                 { detail: {} }));
         } else if (msg.video_frame) {
             this._framebufferUpdate(msg.video_frame);
-        } else if (msg.cursor) {
+        } else if (msg.cursor_data) {
             this._handleCursor(msg.cursor_data);
         } else if (msg.clipboard) {
             this._handle_server_cut_text();
@@ -1053,26 +1058,30 @@ export default class RFB extends EventTargetMixin {
     }
 
     _handleCursor(cursor) {
-        const { hotx, hoty, colors, mask } = cursor;
+        const { hotx, hoty, mask } = cursor;
+        let colors = window.simple_zstd.decompress(cursor.colors);
         const w = cursor.width;
         const h = cursor.height;
 
-        // const pixelslength = w * h * 4;
-        // const masklength = Math.ceil(w / 8) * h;
-        // Decode from BGRX pixels + bit mask to RGBA
-        let rgba = new Uint8Array(w * h * 4);
+        let rgba;
+        if (mask) {
+            // Decode from BGRX pixels + bit mask to RGBA
+            rgba = new Uint8Array(w * h * 4);
 
-        let pix_idx = 0;
-        for (let y = 0; y < h; y++) {
-            for (let x = 0; x < w; x++) {
-                let mask_idx = y * Math.ceil(w / 8) + Math.floor(x / 8);
-                let alpha = (mask[mask_idx] << (x % 8)) & 0x80 ? 255 : 0;
-                rgba[pix_idx    ] = colors[pix_idx + 2];
-                rgba[pix_idx + 1] = colors[pix_idx + 1];
-                rgba[pix_idx + 2] = colors[pix_idx];
-                rgba[pix_idx + 3] = alpha;
-                pix_idx += 4;
+            let pix_idx = 0;
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    let mask_idx = y * Math.ceil(w / 8) + Math.floor(x / 8);
+                    let alpha = (mask[mask_idx] << (x % 8)) & 0x80 ? 255 : 0;
+                    rgba[pix_idx    ] = colors[pix_idx + 2];
+                    rgba[pix_idx + 1] = colors[pix_idx + 1];
+                    rgba[pix_idx + 2] = colors[pix_idx];
+                    rgba[pix_idx + 3] = alpha;
+                    pix_idx += 4;
+                }
             }
+        } else {
+            rgba = colors;
         }
 
         this._updateCursor(rgba, hotx, hoty, w, h);

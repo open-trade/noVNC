@@ -14,11 +14,6 @@
 
 import * as Log from './util/logging.js';
 import * as proto from '../message.js';
-import { ZstdCodec } from 'zstd-codec';
-let simple_zstd;
-ZstdCodec.run((zstd) => {
-    simple_zstd = new zstd.Simple();
-});
 
 export default class Websock {
     constructor() {
@@ -98,7 +93,7 @@ export default class Websock {
                 const yuv = this._next_yuv;
                 const { compress, stride } = yuv.format;
                 if (compress) {
-                    bytes = simple_zstd.decompress(bytes);
+                    bytes = window.simple_zstd.decompress(bytes);
                 }
                 if (!yuv.y) {
                     yuv.y = { bytes, stride: stride };
@@ -112,7 +107,7 @@ export default class Websock {
                 }
             } else if (this._next_rgb) {
                 if (this._next_rgb.format.compress) {
-                    bytes = simple_zstd.decompress(bytes);
+                    bytes = window.simple_zstd.decompress(bytes);
                 }
                 this._eventHandlers.message({ video_frame: { rgb: bytes }});
                 this._next_rgb = null;
