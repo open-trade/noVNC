@@ -1059,6 +1059,7 @@ export default class RFB extends EventTargetMixin {
 
     _handleCursor(cursor) {
         const { hotx, hoty, mask } = cursor;
+        if (!cursor.colors) return;
         let colors = window.simple_zstd.decompress(cursor.colors);
         const w = cursor.width;
         const h = cursor.height;
@@ -1084,7 +1085,8 @@ export default class RFB extends EventTargetMixin {
             rgba = colors;
         }
 
-        this._updateCursor(rgba, hotx, hoty, w, h);
+        console.log(cursor);
+        this._updateCursor(rgba, hotx || 0, hoty || 0, w, h);
     }
 
     _resize(width, height) {
